@@ -90,6 +90,31 @@ def _normalize_segment_record(segment: dict[str, Any], *, index: int) -> dict[st
         except (TypeError, ValueError):
             return None
 
+    segment_id = (
+        segment.get("segment_id") or segment.get("seg_id") or segment.get("id") or index
+    )
+    segment_text = (
+        segment.get("segment_text")
+        or segment.get("seg_txt")
+        or segment.get("text")
+        or ""
+    )
+    translate_context = (
+        segment.get("translate_context")
+        or segment.get("trans_txt")
+        or segment.get("translation")
+        or ""
+    )
+    sub_length = (
+        segment.get("sub_langth") or segment.get("length") or segment.get("duration")
+    )
+    start_point = segment.get("start_point")
+    if start_point is None:
+        start_point = segment.get("start")
+    end_point = segment.get("end_point")
+    if end_point is None:
+        end_point = segment.get("end")
+
     issues = segment.get("issues") or []
     if not isinstance(issues, list):
         issues = [issues]
@@ -99,14 +124,14 @@ def _normalize_segment_record(segment: dict[str, Any], *, index: int) -> dict[st
         assets = None
 
     normalized = {
-        "segment_id": str(segment.get("segment_id", index)),
-        "segment_text": segment.get("segment_text", ""),
+        "segment_id": str(segment_id),
+        "segment_text": segment_text,
         "score": segment.get("score"),
         "editor_id": segment.get("editor_id"),
-        "translate_context": segment.get("translate_context", ""),
-        "sub_langth": _float_or_none(segment.get("sub_langth")),
-        "start_point": _float_or_none(segment.get("start_point")) or 0.0,
-        "end_point": _float_or_none(segment.get("end_point")) or 0.0,
+        "translate_context": translate_context,
+        "sub_langth": _float_or_none(sub_length),
+        "start_point": _float_or_none(start_point) or 0.0,
+        "end_point": _float_or_none(end_point) or 0.0,
         "issues": issues,
     }
 
@@ -132,9 +157,7 @@ def _resolve_callback_base() -> str:
     if app_env in {"dev", "development", "local"}:
         return "http://localhost:8000"
 
-    raise HTTPException(
-        status_code=500, detail="JOB_CALLBACK_BASE_URL env not set"
-    )
+    raise HTTPException(status_code=500, detail="JOB_CALLBACK_BASE_URL env not set")
 
 
 def _collect_segment_assets(segment: dict[str, Any]) -> dict[str, Any]:
@@ -307,8 +330,14 @@ async def update_job_status(
     if payload.error is not None:
         update_operations["$set"]["error"] = payload.error
 
+    metadata_dict: dict[str, Any] | None = None
     if payload.metadata is not None:
-        update_operations["$set"]["metadata"] = payload.metadata.model_dump()
+        metadata_dict = (
+            payload.metadata.model_dump()
+            if hasattr(payload.metadata, "model_dump")
+            else payload.metadata
+        )
+        update_operations["$set"]["metadata"] = metadata_dict
 
     updated = await db[JOB_COLLECTION].find_one_and_update(
         {"_id": job_oid},
@@ -322,9 +351,8 @@ async def update_job_status(
         )
 
     project_updates: dict[str, Any] = {}
-    metadata = payload.metadata if isinstance(payload.metadata, dict) else None
-    if metadata:
-        segments_meta = metadata.get("segments")
+    if metadata_dict:
+        segments_meta = metadata_dict.get("segments")
         if isinstance(segments_meta, list):
             normalized_segments = [
                 _normalize_segment_record(seg if isinstance(seg, dict) else {}, index=i)
@@ -333,28 +361,28 @@ async def update_job_status(
             project_updates["segments"] = normalized_segments
             project_updates["segments_updated_at"] = now
 
-        assets_prefix = metadata.get("segment_assets_prefix")
+        assets_prefix = metadata_dict.get("segment_assets_prefix")
         if assets_prefix:
             project_updates["segment_assets_prefix"] = assets_prefix
 
-        target_lang = metadata.get("target_lang")
+        target_lang = metadata_dict.get("target_lang")
         if target_lang:
             project_updates["target_lang"] = target_lang
 
-        source_lang = metadata.get("source_lang")
+        source_lang = metadata_dict.get("source_lang")
         if source_lang:
             project_updates["source_lang"] = source_lang
 
-        metadata_key = metadata.get("metadata_key")
+        metadata_key = metadata_dict.get("metadata_key")
         if metadata_key:
             project_updates["segment_metadata_key"] = metadata_key
 
-        result_key_meta = metadata.get("result_key")
+        result_key_meta = metadata_dict.get("result_key")
         if result_key_meta:
             project_updates["segment_result_key"] = result_key_meta
 
-        if metadata.get("stage") == "segment_tts_completed":
-            segment_patch = metadata.get("segment")
+        if metadata_dict.get("stage") == "segment_tts_completed":
+            segment_patch = metadata_dict.get("segment")
             if isinstance(segment_patch, dict):
                 field_updates = _build_segment_field_updates(segment_patch)
                 if field_updates:

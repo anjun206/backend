@@ -73,13 +73,13 @@ async def set_job_status(job_id: str, payload: JobUpdateStatus, db: DbDep) -> Jo
     # job 상태 업데이트
     result = await update_job_status(db, job_id, payload)
 
-    if payload.metadata is not None:
-        if payload.metadata is not None:
-            metadata = (
-                payload.metadata.model_dump()
-                if hasattr(payload.metadata, "model_dump")
-                else payload.metadata
-            )
+    metadata = (
+        payload.metadata.model_dump()
+        if payload.metadata is not None and hasattr(payload.metadata, "model_dump")
+        else payload.metadata
+        if isinstance(payload.metadata, dict)
+        else None
+    )
 
     # state 없을 때 리턴
     if not metadata or "stage" not in metadata:
@@ -87,43 +87,75 @@ async def set_job_status(job_id: str, payload: JobUpdateStatus, db: DbDep) -> Jo
 
     stage = metadata["stage"]
     project_id = result.project_id
-    update_payload: dict[str, object] = {
-        "project_id": project_id,
-        "status": PipelineStatus.PROCESSING,
-    }
+    update_payload: dict[str, object] | None = None
 
     # stage별, project 파이프라인 업데이트
     if stage == "downloaded":  # s3에서 불러오기 완료 (stt 시작)
-        update_payload.update(
-            stage_id="stt",
-            progress=0,
-        )
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "stt",
+            "status": PipelineStatus.PROCESSING,
+            "progress": 0,
+        }
     elif stage == "stt_completed":  # stt 완료
-        update_payload.update(
-            stage_id="stt",
-            progress=100,
-            status=PipelineStatus.COMPLETED,
-        )
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "stt",
+            "status": PipelineStatus.COMPLETED,
+            "progress": 100,
+        }
 
     elif stage == "mt_prepare":
-        update_payload.update(
-            stage_id="mt",
-            progress=0,
-        )
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "mt",
+            "status": PipelineStatus.PROCESSING,
+            "progress": 0,
+        }
     elif stage == "mt_completed":  # mt 완료
-        update_payload = await mt_complete_processing(db, project_id, update_payload)
+        base_payload = {
+            "project_id": project_id,
+            "status": PipelineStatus.PROCESSING,
+        }
+        update_payload = await mt_complete_processing(db, project_id, base_payload)
     elif stage == "tts_prepare":
-        update_payload.update(
-            stage_id="tts",
-            progress=0,
-        )
-    elif stage == "tts_completed":  # tts 완료
-        update_payload.update(
-            stage_id="tts",
-            progress=100,
-            status=PipelineStatus.COMPLETED,
-        )
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "tts",
+            "status": PipelineStatus.PROCESSING,
+            "progress": 0,
+        }
+    elif stage in {"tts_completed", "completed"}:  # tts 완료
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "tts",
+            "status": PipelineStatus.COMPLETED,
+            "progress": 100,
+        }
+    elif stage == "segment_mix_started":
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "packaging",
+            "status": PipelineStatus.PROCESSING,
+            "progress": 0,
+        }
+    elif stage == "segment_mix_completed":
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": "packaging",
+            "status": PipelineStatus.COMPLETED,
+            "progress": 100,
+        }
+    elif stage == "failed":
+        update_payload = {
+            "project_id": project_id,
+            "stage_id": metadata.get("stage_id") or "tts",
+            "status": PipelineStatus.FAILED,
+            "progress": metadata.get("progress", 0),
+            "error": payload.error,
+        }
 
-    await update_pipeline(db, project_id, update_payload)
+    if update_payload:
+        await update_pipeline(db, project_id, update_payload)
 
     return result
